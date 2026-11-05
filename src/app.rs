@@ -791,12 +791,31 @@ impl App {
 
     fn playlist_view(&mut self, ui: &mut Ui, ctx: &egui::Context, compact: bool) {
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search…").desired_width(ui.available_width() - 70.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search…").desired_width(ui.available_width() - 140.0));
             if r.changed() {
                 self.filter_dirty = true;
             }
             if ui.button("+ Add").clicked() {
                 self.open_files();
+            }
+            // Two-step so a stray click can't wipe a big playlist: first click arms it for 3 s.
+            let armed_key = ui.id().with("clear-armed-until");
+            let now = self.time();
+            let armed = ui.ctx().data(|d| d.get_temp::<f64>(armed_key)).is_some_and(|t| now < t);
+            let label = if armed { RichText::new("Sure?").color(MAGENTA) } else { RichText::new("Clear") };
+            let clear = ui
+                .add_enabled(!self.playlist.is_empty(), egui::Button::new(label))
+                .on_hover_text("Remove every track from the playlist");
+            if clear.clicked() {
+                if armed {
+                    self.clear();
+                    ui.ctx().data_mut(|d| d.remove::<f64>(armed_key));
+                } else {
+                    ui.ctx().data_mut(|d| d.insert_temp(armed_key, now + 3.0));
+                }
+            }
+            if armed {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
             }
         });
         if self.filter_dirty {
