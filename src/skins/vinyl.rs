@@ -79,6 +79,7 @@ pub fn draw(ui: &mut Ui, np: &NowPlaying) -> Vec<Action> {
         let sticker = c + Vec2::angled(np.anim.platter + 1.2) * lr * 0.78;
         p.circle_filled(sticker, u * 1.2, YELLOW);
         p.circle_stroke(c, lr, Stroke::new(1.0f32, Color32::from_black_alpha(120)));
+        glow_circle(&p, c, lr, MAGENTA, 3.0 * u * np.anim.platter_speed.max(0.3));
 
         // click-to-drop-the-needle
         let rec = Rect::from_center_size(c, Vec2::splat(r * 2.0));

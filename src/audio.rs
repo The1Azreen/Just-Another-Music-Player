@@ -390,7 +390,7 @@ impl Player {
             tap: Arc::new(Mutex::new(VecDeque::with_capacity(TAP_LEN))),
             current: None,
             offset: 0.0,
-            volume: 0.8,
+            volume: 0.05,
             paused: false,
             info: StreamInfo::default(),
             last_error: err,

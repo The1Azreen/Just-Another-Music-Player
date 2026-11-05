@@ -1,6 +1,7 @@
 //! The look of https://the1azreen.neocities.org/ : night-sky background, neon-yellow bordered
 //! purple windows, teal highlights, magenta taskbar, PixelMplus12 everywhere.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use egui::epaint::{Mesh, Shadow, Vertex, WHITE_UV};
@@ -40,11 +41,17 @@ pub fn install(ctx: &egui::Context) {
         "pixel-bold".into(),
         Arc::new(FontData::from_static(include_bytes!("../assets/fonts/PixelMplus12-Bold.ttf"))),
     );
-    // Pixel font first, egui's bundled fonts behind it for anything it lacks (CJK, symbols).
-    let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    fonts.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "pixel".into());
+    // Chain: pixel font (Latin + kana + 6k kanji) → egui's bundled fonts → system fonts for
+    // every other script. Bold only has Latin, so it falls back to the regular pixel font.
+    let mut chain = vec!["pixel".to_string()];
+    chain.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
+    for (name, data) in system_fallback_fonts() {
+        fonts.font_data.insert(name.clone(), Arc::new(data));
+        chain.push(name);
+    }
     let mut bold_chain = vec!["pixel-bold".to_string()];
-    bold_chain.extend(fallback);
+    bold_chain.extend(chain.iter().cloned());
+    fonts.families.insert(FontFamily::Proportional, chain);
     fonts.families.insert(FontFamily::Name(BOLD.into()), bold_chain);
     ctx.set_fonts(fonts);
 
@@ -98,6 +105,63 @@ pub fn install(ctx: &egui::Context) {
     // Always dark, whatever the OS theme is.
     ctx.set_theme(egui::ThemePreference::Dark);
     ctx.set_style_of(egui::Theme::Dark, style);
+}
+
+/// Fonts the OS already has, for scripts the pixel font lacks (Chinese, Korean, Thai, Arabic,
+/// Hebrew, Indic, rare kanji...). They're memory-mapped rather than read, so only the glyphs
+/// actually drawn are paged in and the app stays small. Japanese comes first so shared Han
+/// characters keep their Japanese shapes.
+fn system_fallback_fonts() -> Vec<(String, FontData)> {
+    #[cfg(windows)]
+    let candidates: &[&str] = &[
+        "YuGothM.ttc", "meiryo.ttc", "msgothic.ttc", // Japanese
+        "malgun.ttf", "gulim.ttc",                   // Korean
+        "msyh.ttc", "simsun.ttc", "msjh.ttc",        // Chinese (simplified, traditional)
+        "segoeui.ttf",                               // Cyrillic, Greek, Arabic, Hebrew, Vietnamese
+        "LeelawUI.ttf", "Nirmala.ttf", "Nirmala.ttc", // Thai/Lao/Khmer, Indic
+        "seguisym.ttf",                              // symbols
+    ];
+    #[cfg(target_os = "macos")]
+    let candidates: &[&str] = &[
+        "ヒラギノ角ゴシック W3.ttc", "Hiragino Sans GB.ttc", "AppleSDGothicNeo.ttc",
+        "PingFang.ttc", "Supplemental/Arial Unicode.ttf", "Thonburi.ttc", "Kohinoor.ttc",
+    ];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let candidates: &[&str] = &[
+        "opentype/noto/NotoSansCJK-Regular.ttc", "noto-cjk/NotoSansCJK-Regular.ttc",
+        "google-noto-cjk/NotoSansCJK-Regular.ttc", "opentype/noto-cjk/NotoSansCJK-Regular.ttc",
+        "truetype/droid/DroidSansFallbackFull.ttf", "truetype/wqy/wqy-microhei.ttc",
+        "truetype/noto/NotoSans-Regular.ttf", "truetype/dejavu/DejaVuSans.ttf",
+        "truetype/noto/NotoSansThai-Regular.ttf", "truetype/noto/NotoSansArabic-Regular.ttf",
+    ];
+
+    let dirs: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let root = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+        let mut d = vec![std::path::PathBuf::from(root).join("Fonts")];
+        // per-user installed fonts
+        if let Some(local) = dirs::data_local_dir() {
+            d.push(local.join("Microsoft\\Windows\\Fonts"));
+        }
+        d
+    } else if cfg!(target_os = "macos") {
+        vec!["/System/Library/Fonts".into(), "/Library/Fonts".into()]
+    } else {
+        vec!["/usr/share/fonts".into(), "/usr/local/share/fonts".into()]
+    };
+
+    candidates
+        .iter()
+        .filter_map(|name| dirs.iter().map(|d| d.join(name)).find(|p| p.is_file()))
+        .filter_map(|path| {
+            let file = std::fs::File::open(&path).ok()?;
+            // SAFETY: system font files aren't modified while we run; the mapping is leaked so
+            // it lives as long as egui needs the bytes.
+            let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+            let bytes: &'static [u8] = &Box::leak(Box::new(map))[..];
+            let name = format!("sys:{}", path.file_name()?.to_string_lossy());
+            Some((name, FontData::from_static(bytes)))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -228,6 +292,7 @@ pub fn window<R>(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui) ->
                 })
                 .inner
         });
+    glow_rect(ui.painter(), resp.response.rect, 4.0, if hovered { TEAL } else { YELLOW }, 7.0);
     ui.ctx().data_mut(|d| d.insert_temp(id, resp.response.rect));
     resp.inner
 }
@@ -288,10 +353,96 @@ pub fn image_in(painter: &egui::Painter, rect: Rect, tex: TextureId, tint: Color
     painter.image(tex, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Neon glow ("HDR" in settings). Halos are drawn with zero alpha, which in egui's premultiplied
+// pipeline means additive blending: they brighten whatever is underneath, like light bleeding.
+
+static GLOW: AtomicBool = AtomicBool::new(true);
+
+pub fn set_glow(on: bool) {
+    GLOW.store(on, Ordering::Relaxed);
+}
+
+pub fn glow_on() -> bool {
+    GLOW.load(Ordering::Relaxed)
+}
+
+fn additive(c: Color32, k: f32) -> Color32 {
+    let c = c.gamma_multiply(k.clamp(0.0, 1.0));
+    Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 0)
+}
+
+/// A soft halo outside `rect`'s edge.
+pub fn glow_rect(p: &egui::Painter, rect: Rect, radius: f32, color: Color32, spread: f32) {
+    if !glow_on() {
+        return;
+    }
+    const LAYERS: i32 = 4;
+    for i in 1..=LAYERS {
+        let t = i as f32 / LAYERS as f32;
+        let w = spread / LAYERS as f32 + 0.5;
+        p.rect_stroke(rect.expand(spread * t - w * 0.5), radius + spread * t, Stroke::new(w, additive(color, 0.45 * (1.0 - t) + 0.05)), StrokeKind::Middle);
+    }
+}
+
+/// A soft halo around a circle's rim.
+pub fn glow_circle(p: &egui::Painter, center: Pos2, radius: f32, color: Color32, spread: f32) {
+    if !glow_on() {
+        return;
+    }
+    const LAYERS: i32 = 4;
+    for i in 1..=LAYERS {
+        let t = i as f32 / LAYERS as f32;
+        let w = spread / LAYERS as f32 + 0.5;
+        p.circle_stroke(center, radius + spread * t - w * 0.5, Stroke::new(w, additive(color, 0.45 * (1.0 - t) + 0.05)));
+    }
+}
+
+/// Bloom for small lit things (LCD segments, spectrum bars): stacked, growing additive fills.
+pub fn glow_fill(p: &egui::Painter, rect: Rect, color: Color32, spread: f32) {
+    if !glow_on() {
+        return;
+    }
+    for i in 1..=3 {
+        let t = i as f32 / 3.0;
+        p.rect_filled(rect.expand(spread * t), spread * t, additive(color, 0.28 * (1.0 - t) + 0.04));
+    }
+}
+
+/// Glowing text: the same string smeared around itself additively.
+pub fn glow_text(p: &egui::Painter, pos: Pos2, align: egui::Align2, text: &str, font: FontId, color: Color32) {
+    if !glow_on() {
+        return;
+    }
+    for r in [2.0f32, 4.0] {
+        for k in 0..8 {
+            let d = Vec2::angled(k as f32 * std::f32::consts::TAU / 8.0) * r;
+            p.text(pos + d, align, text, font.clone(), additive(color, if r < 3.0 { 0.22 } else { 0.10 }));
+        }
+    }
+}
+
 /// White at `a`/255 opacity in sRGB space. (`Color32::from_white_alpha` treats `a` as linear,
 /// which comes out far brighter than intended for faint highlights.)
 pub fn white_a(a: u8) -> Color32 {
     Color32::from_rgba_premultiplied(a, a, a, a)
+}
+
+/// egui lays text out left-to-right without shaping. For Arabic / Persian / Hebrew, join the
+/// letters into their contextual forms and reorder runs into visual order before drawing.
+/// Everything else passes through untouched (and unallocated).
+pub fn visual(s: &str) -> std::borrow::Cow<'_, str> {
+    let is_rtl = |c: char| matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF);
+    if !s.chars().any(is_rtl) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let shaped = ar_reshaper::reshape_line(s);
+    let bidi = unicode_bidi::BidiInfo::new(&shaped, None);
+    let mut out = String::with_capacity(shaped.len());
+    for para in &bidi.paragraphs {
+        out.push_str(&bidi.reorder_line(para, para.range.clone()));
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {

@@ -21,6 +21,9 @@ rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
+memmap2 = "0.9"
+unicode-bidi = "0.3"
+ar-reshaper = "1.5"
 
 [profile.release]
 opt-level = 3

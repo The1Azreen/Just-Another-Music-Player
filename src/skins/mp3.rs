@@ -26,6 +26,7 @@ pub fn draw(ui: &mut Ui, np: &NowPlaying) -> Vec<Action> {
     p.rect_filled(bezel, 2.0 * u, Color32::BLACK);
     let scr = bezel.shrink(1.5 * u);
     p.rect_filled(scr, u, SCREEN_BG);
+    glow_rect(&p, bezel, 2.0 * u, TEAL, 2.5 * u);
 
     let header = Rect::from_min_size(scr.min, Vec2::new(scr.width(), 5.0 * u));
     p.rect_filled(header, 0.0, PURPLE);

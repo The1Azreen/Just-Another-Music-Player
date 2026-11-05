@@ -192,6 +192,10 @@ fn seven_seg(p: &egui::Painter, r: Rect, d: u8, on: Color32, off: Color32, s: f3
         Rect::from_min_max(Pos2::new(l + t, mid - t * 0.5), Pos2::new(rgt - t, mid + t * 0.5)), // g
     ];
     for (i, seg) in segs.iter().enumerate() {
-        p.rect_filled(*seg, 0.0, if mask & (1 << i) != 0 { on } else { off });
+        let lit = mask & (1 << i) != 0;
+        if lit {
+            glow_fill(p, *seg, on, 1.6 * s);
+        }
+        p.rect_filled(*seg, 0.0, if lit { on } else { off });
     }
 }

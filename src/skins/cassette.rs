@@ -34,6 +34,7 @@ pub fn draw(ui: &mut Ui, np: &NowPlaying) -> Vec<Action> {
     let door = Rect::from_min_size(deck.min + Vec2::new(5.0 * u, 11.0 * u), Vec2::new(92.0 * u, 62.0 * u));
     p.rect_filled(door, 3.0 * u, Color32::from_rgb(0x14, 0x10, 0x22));
     p.rect_stroke(door, 3.0 * u, Stroke::new(1.5f32, TEAL), StrokeKind::Inside);
+    glow_rect(&p, door, 3.0 * u, TEAL, 2.5 * u);
     let shell = door.shrink2(Vec2::new(4.0 * u, 4.0 * u));
 
     if np.loaded {

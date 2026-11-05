@@ -64,6 +64,7 @@ pub fn draw(ui: &mut Ui, np: &NowPlaying) -> Vec<Action> {
         ring(&p, c, disc_r * 0.33, disc_r * 0.16, white_a(70));
         p.circle_stroke(c, disc_r * 0.33, Stroke::new(1.0f32, white_a(120)));
         p.circle_stroke(c, disc_r, Stroke::new(1.0f32, Color32::from_gray(160)));
+        glow_circle(&p, c, disc_r, TEAL, 4.0 * u * np.anim.cd_speed.max(0.3));
     }
     // spindle
     p.circle_filled(c, disc_r * 0.15, Color32::from_gray(30));

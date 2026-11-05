@@ -33,16 +33,41 @@ Switch skins with the icons in the header. The choice is remembered.
   - covers from the iTunes Search API, then [MusicBrainz](https://musicbrainz.org/) + [Cover Art Archive](https://coverartarchive.org/)
 
   Results (and misses) are cached, so each song is looked up once. Toggle with **Online: on/off**.
+- **Every language.** Japanese is drawn in the pixel font itself (kana + 6,000 kanji). Chinese,
+  Korean, Thai, Cyrillic, Greek, Arabic, Hebrew, Hindi and the rest use fonts already installed
+  on your system, memory-mapped so they cost almost nothing. Arabic/Persian/Hebrew are joined
+  and laid out right-to-left. (Complex Indic conjuncts are only approximated: egui has no full
+  text shaper.)
+- **Discord Rich Presence** (optional): "Listening to" with title, artist, album, a progress bar,
+  and the album cover when it came from the internet.
+- **Neon glow**: an HDR-style bloom on borders, LCD digits, spectrum bars and spinning media.
 - Playlist with search, drag & drop of files and folders, `.m3u`/`.m3u8` import, shuffle,
-  repeat all/one, and session restore.
+  repeat all/one, and session restore. Always starts at 5% volume.
 - Spectrum analyser and oscilloscope fed from the actual audio.
 - Your site's look: PixelMplus12 font, scrolling star background ported from the site's CSS,
   yellow-bordered windows that light up teal on hover, magenta taskbar.
 
+## Settings
+
+![Settings](docs/screenshots/settings.png)
+
+- **Look**: neon glow on/off.
+- **Lyrics & covers**: online lookup on/off, clear the cache, re-fetch the current track.
+- **Discord**: show what you're playing. One-time setup:
+  1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and click
+     **New Application**. The name you give it (e.g. "JAMP") is what Discord shows.
+  2. Copy the **Application ID** from the app's General Information page.
+  3. Paste it into JAMP's Settings and tick **Show what I'm playing on Discord**.
+
+  The Discord desktop app must be running. JAMP connects in the background, reconnects if
+  Discord restarts, and the status line under the field says what's going on.
+- **Playlist**: clear it, and see whether ffmpeg was found.
+
 ## Download / portable use
 
-`release/portable.exe` is a single self-contained Windows executable with no installer and no
-VC++ runtime needed. Because its name contains "portable", it keeps settings, playlist and the
+`cargo build --release` produces a single self-contained Windows executable
+(`target/release/jamp.exe`) with no installer and no VC++ runtime needed. Rename it to
+`portable.exe` (anything containing "portable" works) and it keeps settings, playlist and the
 lyrics/cover cache in a `jamp-data` folder next to itself, so the folder can live on a USB stick.
 
 Any build of JAMP becomes portable if you create a `jamp-data` folder next to the exe. Otherwise
@@ -82,6 +107,7 @@ jamp [FILES/FOLDERS/PLAYLISTS...] [options]
   --skin <modern|amp|cd|mp3|vinyl|tape>   start with this skin
   --seek <seconds>                         start the first track at this position
   --fresh                                  ignore and don't save the previous session
+  --settings                               open the settings window at start
   --screenshot-dir <dir>                   screenshot every skin into <dir> and quit
 ```
 
@@ -100,8 +126,9 @@ src/
   audio.rs      Symphonia/ffmpeg decoding, rodio output, visualiser tap, FFT
   meta.rs       tags (lofty), embedded/local covers and lyrics
   online.rs     LRCLIB / iTunes / MusicBrainz lookups + disk cache
+  discord.rs    Discord Rich Presence over the local IPC pipe
   lyrics.rs     plain + LRC parsing
-  theme.rs      site palette, fonts, night sky, window frame, drawing helpers
+  theme.rs      site palette, fonts (+ system fallbacks, RTL), night sky, glow, drawing helpers
   skins/        modern, amp, cd, mp3, vinyl, cassette
 ```
 

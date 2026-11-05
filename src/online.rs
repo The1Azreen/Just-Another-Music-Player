@@ -43,6 +43,8 @@ pub struct Extras {
     pub path: PathBuf,
     pub cover: Option<(egui::ColorImage, Origin)>,
     pub lyrics: Option<(String, Origin)>,
+    /// Where an online cover came from, for things that need a link (Discord).
+    pub cover_url: Option<String>,
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -103,16 +105,29 @@ pub fn resolve(path: &Path, meta: &TrackMeta, allow_online: bool) -> Extras {
         .or_else(|| cached_or_fetch("lyrics", &lyrics_key(meta), allow_online, || fetch_lyrics(meta))
             .and_then(|(b, o)| String::from_utf8(b).ok().map(|s| (s, o))));
 
+    let ck = cover_key(meta);
+    let mut cover_url = None;
     let cover = meta::embedded_cover(path)
         .and_then(|b| decode_cover(&b))
         .map(|c| (c, Origin::Embedded))
         .or_else(|| meta::folder_cover(path).and_then(|b| decode_cover(&b)).map(|c| (c, Origin::Local)))
         .or_else(|| {
-            cached_or_fetch("covers", &cover_key(meta), allow_online, || fetch_cover(meta))
+            cached_or_fetch("covers", &ck, allow_online, || fetch_cover(meta, &mut cover_url))
                 .and_then(|(b, o)| decode_cover(&b).map(|c| (c, o)))
         });
+    if matches!(cover, Some((_, Origin::Online | Origin::Cache))) {
+        if let Some(k) = &ck {
+            let url_file = cache_dir().join("covers").join(format!("{k}.url"));
+            match &cover_url {
+                Some(u) => {
+                    let _ = std::fs::write(&url_file, u);
+                }
+                None => cover_url = std::fs::read_to_string(&url_file).ok(),
+            }
+        }
+    }
 
-    Extras { path: path.to_path_buf(), cover, lyrics }
+    Extras { path: path.to_path_buf(), cover, lyrics, cover_url }
 }
 
 fn lyrics_key(meta: &TrackMeta) -> Option<String> {
@@ -206,7 +221,7 @@ fn fetch_lyrics(meta: &TrackMeta) -> Option<Vec<u8>> {
     lyrics_from(best).map(String::into_bytes)
 }
 
-fn fetch_cover(meta: &TrackMeta) -> Option<Vec<u8>> {
+fn fetch_cover(meta: &TrackMeta, url_out: &mut Option<String>) -> Option<Vec<u8>> {
     let agent = agent();
     let (entity, term) = if meta.album.is_empty() {
         ("song", format!("{} {}", meta.artist, meta.title))
@@ -228,7 +243,9 @@ fn fetch_cover(meta: &TrackMeta) -> Option<Vec<u8>> {
             })
             .and_then(|r| r.get("artworkUrl100")?.as_str().map(str::to_string))
     }) {
-        if let Some(b) = get_bytes(&agent, &url.replace("100x100bb", "600x600bb")) {
+        let big = url.replace("100x100bb", "600x600bb");
+        if let Some(b) = get_bytes(&agent, &big) {
+            *url_out = Some(big);
             return Some(b);
         }
     }
@@ -245,7 +262,9 @@ fn fetch_cover(meta: &TrackMeta) -> Option<Vec<u8>> {
     )?;
     for rel in mb.get("releases")?.as_array()? {
         let Some(id) = rel.get("id").and_then(Value::as_str) else { continue };
-        if let Some(b) = get_bytes(&agent, &format!("https://coverartarchive.org/release/{id}/front-500")) {
+        let url = format!("https://coverartarchive.org/release/{id}/front-500");
+        if let Some(b) = get_bytes(&agent, &url) {
+            *url_out = Some(url);
             return Some(b);
         }
     }
@@ -273,7 +292,9 @@ mod tests {
         let m = song("Daft Punk", "One More Time", "Discovery", 320.0);
         let lyr = fetch_lyrics(&m).expect("lyrics");
         assert!(String::from_utf8(lyr).unwrap().contains("One more time"));
-        let cover = fetch_cover(&m).expect("cover");
+        let mut url = None;
+        let cover = fetch_cover(&m, &mut url).expect("cover");
+        assert!(url.is_some_and(|u| u.starts_with("https://")));
         assert!(decode_cover(&cover).is_some());
     }
 }

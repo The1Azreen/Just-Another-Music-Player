@@ -6,6 +6,7 @@ use std::time::Instant;
 use egui::{Align2, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2};
 
 use crate::audio::{self, Player};
+use crate::discord;
 use crate::lyrics::Lyrics;
 use crate::meta::{self, TrackMeta};
 use crate::online::{self, Extras, Origin};
@@ -14,6 +15,7 @@ use crate::theme::*;
 
 const BANDS: usize = 32;
 const ROW_H: f32 = 20.0;
+const STARTUP_VOLUME: f32 = 0.05;
 
 #[derive(Default)]
 pub struct Options {
@@ -24,6 +26,7 @@ pub struct Options {
     /// Start position in seconds (handy for screenshots: tonearm mid-record, tape half-wound).
     pub seek: Option<f64>,
     pub fresh: bool,
+    pub open_settings: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -36,11 +39,25 @@ struct Saved {
     shuffle: bool,
     repeat: Repeat,
     online: bool,
+    glow: bool,
+    discord: bool,
+    discord_client_id: String,
 }
 
 impl Default for Saved {
     fn default() -> Self {
-        Saved { playlist: Vec::new(), current: None, skin: Skin::Modern, volume: 0.8, shuffle: false, repeat: Repeat::All, online: true }
+        Saved {
+            playlist: Vec::new(),
+            current: None,
+            skin: Skin::Modern,
+            volume: STARTUP_VOLUME,
+            shuffle: false,
+            repeat: Repeat::All,
+            online: true,
+            glow: true,
+            discord: false,
+            discord_client_id: String::new(),
+        }
     }
 }
 
@@ -67,6 +84,13 @@ pub struct App {
     shuffle: bool,
     repeat: Repeat,
     online: bool,
+    glow: bool,
+    discord: bool,
+    discord_client_id: String,
+    presence: discord::Presence,
+    last_presence: Option<discord::Activity>,
+    cover_url: Option<String>,
+    show_settings: bool,
     history: Vec<usize>,
     rng: u64,
 
@@ -122,7 +146,8 @@ impl App {
         let (extras_tx, extras_rx) = channel();
 
         let mut player = Player::new();
-        player.set_volume(saved.volume);
+        // Always start quiet rather than restoring whatever the last session ended at.
+        player.set_volume(STARTUP_VOLUME);
 
         let mut app = App {
             player,
@@ -134,6 +159,13 @@ impl App {
             shuffle: saved.shuffle,
             repeat: saved.repeat,
             online: saved.online,
+            glow: saved.glow,
+            discord: saved.discord,
+            discord_client_id: saved.discord_client_id,
+            presence: discord::Presence::new(),
+            last_presence: None,
+            cover_url: None,
+            show_settings: opts.open_settings,
             history: Vec::new(),
             rng: 0x9E37_79B9_7F4A_7C15 ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1),
             filter: String::new(),
@@ -161,6 +193,8 @@ impl App {
         if app.screenshot.is_some() {
             app.persist = false;
         }
+        set_glow(app.glow);
+        app.presence.configure(app.discord, &app.discord_client_id);
 
         let restored: Vec<PathBuf> = saved.playlist.into_iter().filter(|p| p.exists()).collect();
         let had_restored = !restored.is_empty();
@@ -260,6 +294,7 @@ impl App {
         self.selected = Some(idx);
         self.scroll_to_current = true;
         self.cover = None;
+        self.cover_url = None;
         self.lyrics = None;
         self.last_lyric_line = None;
         self.extras_loading = true;
@@ -405,6 +440,7 @@ impl App {
             self.extras_loading = false;
             self.cover = ex.cover.map(|(img, o)| (ctx.load_texture("cover", img, egui::TextureOptions::LINEAR), o));
             self.lyrics = ex.lyrics.map(|(l, o)| (Lyrics::parse(&l), o));
+            self.cover_url = ex.cover_url;
         }
         if let Some(t) = self.pending_seek {
             if self.player.is_loaded() && self.duration() > 0.0 {
@@ -535,12 +571,13 @@ impl App {
 
     // ----------------------------------------------------------------------------- panels
 
-    fn header(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+    fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.add_space(6.0);
             let (r, _) = ui.allocate_exact_size(Vec2::new(150.0, 52.0), Sense::hover());
             let p = ui.painter();
             p.text(r.left_center() + Vec2::new(3.0, 3.0), Align2::LEFT_CENTER, "JAMP", bold(48.0), MAGENTA);
+            glow_text(p, r.left_center(), Align2::LEFT_CENTER, "JAMP", bold(48.0), MAGENTA);
             p.text(r.left_center(), Align2::LEFT_CENTER, "JAMP", bold(48.0), YELLOW);
             ui.vertical(|ui| {
                 ui.add_space(10.0);
@@ -563,11 +600,47 @@ impl App {
                 if online.clicked() {
                     self.online = !self.online;
                 }
-                ui.menu_button("More", |ui| {
-                    if ui.button("Clear lyrics/cover cache").clicked() {
+                if ui.add(egui::Button::new("Settings").selected(self.show_settings)).clicked() {
+                    self.show_settings = !self.show_settings;
+                }
+                if ui.button("Add folder").clicked() {
+                    self.open_folder();
+                }
+                if ui.button("Open files").clicked() {
+                    self.open_files();
+                }
+            });
+        });
+    }
+
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_settings;
+        egui::Window::new(RichText::new("Settings").font(bold(18.0)))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(400.0)
+            .pivot(Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .show(ctx, |ui| {
+                let heading = |ui: &mut Ui, text: &str| {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(text).font(bold(16.0)).color(TEAL));
+                    ui.separator();
+                };
+
+                heading(ui, "Look");
+                if ui.checkbox(&mut self.glow, "Neon glow (HDR-style bloom)").changed() {
+                    set_glow(self.glow);
+                }
+
+                heading(ui, "Lyrics & covers");
+                ui.checkbox(&mut self.online, "Look up missing lyrics and covers online")
+                    .on_hover_text("Only when the file has none embedded and there's no .lrc / cover.jpg beside it.");
+                ui.horizontal(|ui| {
+                    if ui.button("Clear cache").clicked() {
                         online::clear_cache();
                         self.set_status("Cache cleared");
-                        ui.close_menu();
                     }
                     if ui.button("Re-fetch current track").clicked() {
                         online::clear_cache();
@@ -577,23 +650,89 @@ impl App {
                             self.load_index(c, paused, ctx);
                             self.player.seek(pos);
                         }
-                        ui.close_menu();
                     }
-                    if ui.button("Clear playlist").clicked() {
-                        self.clear();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.label(RichText::new(if audio::ffmpeg_available() { "ffmpeg: found (extra formats on)" } else { "ffmpeg: not found (native formats only)" }).small());
                 });
-                if ui.button("Add folder").clicked() {
-                    self.open_folder();
+
+                heading(ui, "Discord");
+                let mut changed = ui.checkbox(&mut self.discord, "Show what I'm playing on Discord").changed();
+                ui.horizontal(|ui| {
+                    ui.label("Application ID");
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.discord_client_id)
+                            .hint_text("e.g. 1234567890123456789")
+                            .desired_width(200.0),
+                    );
+                    if r.changed() {
+                        self.discord_client_id.retain(|c| c.is_ascii_digit());
+                        changed = true;
+                    }
+                });
+                if changed {
+                    self.last_presence = None;
+                    self.presence.configure(self.discord, &self.discord_client_id);
                 }
-                if ui.button("Open files").clicked() {
-                    self.open_files();
+                ui.label(RichText::new(self.presence.status()).small().color(if self.discord { YELLOW } else { DIM }));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(RichText::new("Create an application at ").small().color(DIM));
+                    ui.hyperlink_to(RichText::new("discord.com/developers").small(), "https://discord.com/developers/applications");
+                    ui.label(RichText::new(" and paste its Application ID. The Discord desktop app must be running.").small().color(DIM));
+                });
+
+                heading(ui, "Playlist");
+                if ui.button("Clear playlist").clicked() {
+                    self.clear();
                 }
+                let ff = if audio::ffmpeg_available() { "ffmpeg: found (extra formats on)" } else { "ffmpeg: not found (native formats only)" };
+                ui.label(RichText::new(ff).small().color(DIM));
             });
+        self.show_settings = open;
+    }
+
+    /// Pushes "now playing" to Discord, but only when something visible changed: the start
+    /// time is recomputed every frame and wobbles slightly, which must not count as an update.
+    fn sync_presence(&mut self) {
+        if !self.discord {
+            return;
+        }
+        let activity = self.current.filter(|_| self.player.is_loaded()).and_then(|i| self.meta_of(i)).map(|m| {
+            let paused = self.player.is_paused();
+            let dur_ms = (m.duration.unwrap_or(0.0) * 1000.0) as u64;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let start = now_ms.saturating_sub((self.player.position() * 1000.0) as u64);
+            discord::Activity {
+                title: m.title.clone(),
+                artist: m.artist.clone(),
+                album: m.album.clone(),
+                cover_url: self.cover_url.clone(),
+                span: (!paused && dur_ms > 0).then_some((start, start + dur_ms)),
+                paused,
+            }
         });
+        let same = match (&activity, &self.last_presence) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                let spans_close = match (a.span, b.span) {
+                    (Some((x, _)), Some((y, _))) => x.abs_diff(y) < 2000,
+                    (None, None) => true,
+                    _ => false,
+                };
+                spans_close
+                    && a.title == b.title
+                    && a.artist == b.artist
+                    && a.album == b.album
+                    && a.cover_url == b.cover_url
+                    && a.paused == b.paused
+            }
+            _ => false,
+        };
+        if !same {
+            self.presence.set(activity.clone());
+            self.last_presence = activity;
+        }
     }
 
     fn taskbar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -725,6 +864,7 @@ impl App {
                 p.rect_filled(rect, 0.0, bg);
                 if playing {
                     p.rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0f32, MAGENTA), StrokeKind::Inside);
+                    glow_rect(p, rect, 0.0, MAGENTA, 4.0);
                 }
                 let fg = if playing { MAGENTA } else { YELLOW };
                 let m = self.meta_of(idx).cloned().unwrap_or_default();
@@ -745,7 +885,7 @@ impl App {
                         let col = if i >= 2 && !playing { TEAL.gamma_multiply(0.9) } else { fg };
                         let align = if compact && i == 2 { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
                         let at = if align == Align2::RIGHT_CENTER { cell.right_center() } else { cell.left_center() };
-                        p.with_clip_rect(cell).text(at, align, text, pixel(16.0), col);
+                        p.with_clip_rect(cell).text(at, align, visual(&text), pixel(16.0), col);
                     }
                     x += cw;
                 }
@@ -811,7 +951,7 @@ impl App {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         for (i, (_, line)) in lyr.lines.iter().enumerate() {
-                            let text = if line.is_empty() { "~".to_string() } else { line.clone() };
+                            let text = if line.is_empty() { "~".to_string() } else { visual(line).into_owned() };
                             let rt = if Some(i) == cur {
                                 RichText::new(text).font(bold(18.0)).color(TEAL)
                             } else if lyr.synced && cur.is_some_and(|c| i < c) {
@@ -843,7 +983,9 @@ impl App {
                 }
             }
         });
-        if let Some(img) = done_one {
+        // egui may run a frame twice with the same input (multi-pass), so the same reply can show
+        // up again: only take it while a capture is actually pending.
+        if let (Some(img), true, false) = (done_one, plan.waiting, plan.queue.is_empty()) {
             let skin = plan.queue.remove(0);
             let path = plan.dir.join(format!("{}.png", skin.label().to_lowercase()));
             let _ = std::fs::create_dir_all(&plan.dir);
@@ -893,7 +1035,7 @@ impl eframe::App for App {
         // the whole window is the night sky
         paint_night_sky(&ctx.layer_painter(egui::LayerId::background()), ctx.screen_rect(), now);
 
-        egui::TopBottomPanel::top("header").frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6))).show(ctx, |ui| self.header(ui, ctx));
+        egui::TopBottomPanel::top("header").frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6))).show(ctx, |ui| self.header(ui));
 
         egui::TopBottomPanel::bottom("taskbar")
             .exact_height(40.0)
@@ -991,6 +1133,8 @@ impl eframe::App for App {
             }
         }
 
+        self.settings_window(ctx);
+        self.sync_presence();
         self.take_screenshots(ctx);
 
         // Smooth animation while something moves; a slow tick for the drifting stars otherwise.
@@ -1015,6 +1159,9 @@ impl eframe::App for App {
             shuffle: self.shuffle,
             repeat: self.repeat,
             online: self.online,
+            glow: self.glow,
+            discord: self.discord,
+            discord_client_id: self.discord_client_id.clone(),
         };
         eframe::set_value(storage, "jamp", &saved);
     }

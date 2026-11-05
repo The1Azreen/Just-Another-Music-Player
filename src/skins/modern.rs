@@ -18,14 +18,14 @@ pub fn now_playing(ui: &mut Ui, np: &NowPlaying, cover_src: Option<&str>) {
     }
     ui.add_space(6.0);
 
-    ui.label(RichText::new(np.title()).font(bold(18.0)).color(YELLOW));
+    ui.label(RichText::new(visual(&np.title())).font(bold(18.0)).color(YELLOW));
     if let Some(m) = np.meta {
         if !m.artist.is_empty() {
-            ui.label(RichText::new(&m.artist).color(TEAL));
+            ui.label(RichText::new(visual(&m.artist)).color(TEAL));
         }
         if !m.album.is_empty() {
             let year = m.year.map(|y| format!(" ({y})")).unwrap_or_default();
-            ui.label(RichText::new(format!("{}{}", m.album, year)).color(DIM));
+            ui.label(RichText::new(format!("{}{}", visual(&m.album), year)).color(DIM));
         }
         let mut tech = vec![m.codec.clone()];
         if let Some(b) = m.bitrate_kbps {

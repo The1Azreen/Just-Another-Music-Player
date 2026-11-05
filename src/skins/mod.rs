@@ -246,6 +246,9 @@ pub fn icon_button(ui: &mut Ui, size: Vec2, icon: Icon, lit: bool) -> Response {
     };
     p.rect_filled(rect, 2.0, bg);
     p.rect_stroke(rect, 2.0, Stroke::new(1.5f32, border), StrokeKind::Inside);
+    if lit {
+        glow_rect(p, rect, 2.0, MAGENTA, 5.0);
+    }
     paint_icon(p, rect.shrink(4.0), icon, fg);
     resp
 }
@@ -275,7 +278,7 @@ pub fn seek_rail(ui: &mut Ui, rect: Rect, frac: f32, track: Color32, fill: Color
 
 /// Scrolling text clipped to `rect`.
 pub fn marquee(p: &egui::Painter, rect: Rect, text: &str, font: egui::FontId, color: Color32, time: f64) {
-    let galley = p.layout_no_wrap(text.to_owned(), font, color);
+    let galley = p.layout_no_wrap(visual(text).into_owned(), font, color);
     let w = galley.size().x;
     let clip = p.with_clip_rect(rect.intersect(p.clip_rect()));
     let y = rect.center().y - galley.size().y * 0.5;
@@ -301,6 +304,10 @@ pub fn spectrum_bars(p: &egui::Painter, rect: Rect, bars: &[f32], peaks: &[f32],
         let v = bars[src];
         let x = rect.left() + i as f32 * (bw + gap);
         let h = v * rect.height();
+        if h > 1.0 {
+            let lit = Rect::from_min_max(Pos2::new(x, rect.bottom() - h), Pos2::new(x + bw, rect.bottom()));
+            glow_fill(p, lit, lerp_color(low, high, v), bw * 0.35);
+        }
         // stacked segments give the classic LED-meter look
         let seg = 3.0;
         let mut y = rect.bottom();
