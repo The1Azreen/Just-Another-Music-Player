@@ -1678,6 +1678,7 @@ dependencies = [
  "image",
  "lofty",
  "memmap2",
+ "raw-window-handle",
  "rfd",
  "rodio",
  "serde",
@@ -1685,6 +1686,7 @@ dependencies = [
  "symphonia",
  "unicode-bidi",
  "ureq",
+ "windows 0.58.0",
  "winresource",
 ]
 

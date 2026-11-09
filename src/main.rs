@@ -7,6 +7,8 @@ mod lyrics;
 mod meta;
 mod online;
 mod skins;
+#[cfg(windows)]
+mod taskbar;
 mod theme;
 
 use std::path::PathBuf;
@@ -84,6 +86,10 @@ fn main() -> eframe::Result {
     let native = eframe::NativeOptions {
         viewport,
         persistence_path: portable_dir().map(|d| d.join("settings.ron")),
+        // eframe's own window restore re-opens maximized windows at the wrong UI scale on
+        // mixed-DPI setups (tiny UI until resized). The app restores size/maximized itself.
+        persist_window: false,
+        centered: true,
         ..Default::default()
     };
     eframe::run_native("jamp", native, Box::new(|cc| Ok(Box::new(app::App::new(cc, opts)))))

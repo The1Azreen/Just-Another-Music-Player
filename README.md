@@ -47,6 +47,8 @@ Switch skins with the icons along the top of the window. JAMP remembers the last
   repeat all / repeat one, and the playlist restored on the next launch.
 - Spectrum analyser and oscilloscope driven by the audio actually playing.
 - JAMP always starts at 5% volume, so it never blasts at launch.
+- On Windows, hovering over JAMP's taskbar icon shows **Previous / Play-Pause / Next** buttons
+  under the window preview, like other music players.
 
 ### Lyrics and cover art
 

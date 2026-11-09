@@ -42,6 +42,9 @@ struct Saved {
     glow: bool,
     discord: bool,
     discord_client_id: String,
+    /// Last un-maximized window size, in points.
+    window_size: Option<[f32; 2]>,
+    maximized: bool,
 }
 
 impl Default for Saved {
@@ -57,6 +60,8 @@ impl Default for Saved {
             glow: true,
             discord: false,
             discord_client_id: String::new(),
+            window_size: None,
+            maximized: false,
         }
     }
 }
@@ -91,6 +96,15 @@ pub struct App {
     last_presence: Option<discord::Activity>,
     cover_url: Option<String>,
     show_settings: bool,
+    window_size: Option<Vec2>,
+    maximized: bool,
+    /// Applied on the first frame, once the window exists on the right monitor.
+    restore_window: Option<(Option<[f32; 2]>, bool)>,
+    restore_wait: u32,
+    #[cfg(windows)]
+    thumbbar: Option<crate::taskbar::Thumbbar>,
+    #[cfg(windows)]
+    thumbbar_tried: bool,
     history: Vec<usize>,
     rng: u64,
 
@@ -166,6 +180,14 @@ impl App {
             last_presence: None,
             cover_url: None,
             show_settings: opts.open_settings,
+            window_size: saved.window_size.map(Vec2::from),
+            maximized: saved.maximized,
+            restore_window: Some((saved.window_size, saved.maximized)),
+            restore_wait: 0,
+            #[cfg(windows)]
+            thumbbar: None,
+            #[cfg(windows)]
+            thumbbar_tried: false,
             history: Vec::new(),
             rng: 0x9E37_79B9_7F4A_7C15 ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1),
             filter: String::new(),
@@ -613,6 +635,72 @@ impl App {
         });
     }
 
+    /// Restores the saved window size/maximized state on the first frame, then keeps track of
+    /// it. Minimized frames are ignored so a minimized close doesn't save a useless size.
+    fn track_window(&mut self, ctx: &egui::Context) {
+        if let Some((size, maximized)) = self.restore_window {
+            let monitor = ctx.input(|i| i.viewport().monitor_size);
+            // The monitor size can take a frame or two to arrive; it's needed for first-run sizing.
+            if monitor.is_none() && self.restore_wait < 10 {
+                self.restore_wait += 1;
+                return;
+            }
+            self.restore_window = None;
+            // Saved size, or on first run 80% of the monitor (a fixed default looks tiny on 4K).
+            let size = size
+                .map(|[w, h]| Vec2::new(w, h))
+                .or_else(|| monitor.map(|m| m * 0.8))
+                .map(|s| s.max(Vec2::new(860.0, 560.0)));
+            if let Some(size) = size {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                if let Some(monitor) = monitor {
+                    let pos = ((monitor - size) * 0.5).max(Vec2::ZERO);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos.to_pos2()));
+                }
+            }
+            if maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
+            return;
+        }
+        let (maximized, minimized, inner) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.maximized.unwrap_or(false), v.minimized.unwrap_or(false), v.inner_rect)
+        });
+        if minimized {
+            return;
+        }
+        self.maximized = maximized;
+        if let Some(r) = inner.filter(|r| !maximized && r.width() >= 400.0 && r.height() >= 300.0) {
+            self.window_size = Some(r.size());
+        }
+    }
+
+    /// Previous / Play-Pause / Next under the taskbar thumbnail.
+    #[cfg(windows)]
+    fn taskbar_buttons(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use crate::taskbar::{Button, Thumbbar};
+        if !self.thumbbar_tried {
+            self.thumbbar_tried = true;
+            if let Ok(handle) = frame.window_handle() {
+                if let RawWindowHandle::Win32(w) = handle.as_raw() {
+                    self.thumbbar = Thumbbar::install(w.hwnd.get(), ctx);
+                }
+            }
+        }
+        let Some(bar) = &mut self.thumbbar else { return };
+        bar.sync(self.player.is_playing());
+        for click in Thumbbar::take_clicks() {
+            let action = match click {
+                Button::Prev => Action::Prev,
+                Button::PlayPause => Action::Toggle,
+                Button::Next => Action::Next,
+            };
+            self.act(action, ctx);
+        }
+    }
+
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
         egui::Window::new(RichText::new("Settings").font(bold(18.0)))
@@ -1031,7 +1119,13 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.track_window(ctx);
+        #[cfg(windows)]
+        self.taskbar_buttons(ctx, frame);
+        #[cfg(not(windows))]
+        let _ = frame;
+
         let now = self.time();
         let dt = ((now - self.last_frame) as f32).clamp(0.0, 0.1);
         self.last_frame = now;
@@ -1181,6 +1275,8 @@ impl eframe::App for App {
             glow: self.glow,
             discord: self.discord,
             discord_client_id: self.discord_client_id.clone(),
+            window_size: self.window_size.map(|s| [s.x, s.y]),
+            maximized: self.maximized,
         };
         eframe::set_value(storage, "jamp", &saved);
     }
